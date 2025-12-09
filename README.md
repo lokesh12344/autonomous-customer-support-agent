@@ -154,15 +154,3 @@ python ui/slack_bot.py
 - [ ] Multi-turn memory optimization
 
 ---
-
-## 📄 License
-
-MIT License
-
-## 🤝 Contributing
-
-Contributions, issues, and feature requests are welcome!
-
-## 📧 Contact
-
-For questions or support, please open an issue in this repository.
