@@ -1,49 +1,146 @@
-🧠 Autonomous Customer Support Agent (Agentic AI)
+🧠 Next-Gen Autonomous Customer Support Agent
 
-An end-to-end, autonomous customer support agent built with local LLMs, LangChain ReAct, FastAPI, SQLite, Chroma, and Stripe.
-Designed to look up orders, trigger refunds, search FAQs, and provide instant customer resolutions — all without human intervention.
+Built with Agentic AI · LangChain ReAct · FastAPI · SQLite · ChromaDB · Local LLM · Stripe Test Mode
 
-This repository contains the planned architecture, tech stack, and implementation roadmap.
-(Code implementation will be added in upcoming commits.)
+A lightweight autonomous support agent capable of:
 
-🚀 Features 
+Order lookups (SQLite)
 
-Local LLM reasoning using LLaMA 3 / Mistral via Ollama
-LangChain ReAct agent for structured reasoning + safe tool execution
-SQLite operational database (orders, customers, inventory)
-Chroma vector store for semantic FAQ & policy retrieval
-Stripe API integration (test mode refunds)
-FastAPI backend to orchestrate the agent
-Slack/Web Chat interface for live demo
-Safe & verified workflows for refunds, replacements, order status
-Local + low-cost architecture (no paid APIs required)
+Refund execution (Stripe Test Mode)
 
-| Layer               | Technology                     |
-| ------------------- | ------------------------------ |
-| **Backend**         | FastAPI                        |
-| **AI Engine**       | LLaMA 3 / Mistral (via Ollama) |
-| **Agent Framework** | LangChain ReAct Agent          |
-| **Database**        | SQLite                         |
-| **Vector Store**    | Chroma                         |
-| **Payments**        | Stripe (Test Mode)             |
-| **Channels**        | Slack API / Web UI             |
-| **Environment**     | Python 3.10+                   |
+FAQ retrieval (Chroma vector search)
 
-🎯 Core Capabilities
-1. Autonomous Decision-Making
-Understands customer intent
-Chooses correct tools (DB, FAQ, Stripe)
-Executes actions safely
+Policy-aware reasoning & safety checks
 
-2. Operational Actions
-Order tracking
-Refund initiation
-Replacement eligibility
-Policy explanations
-FAQ + RAG-based answers
+Real-time chat interface (Slack / Web UI)
 
-3. Safety
-ReAct → step-wise reasoning
-Policy checks before refunds
-Validated Stripe workflows
-Human fallback option (Slack)
+🚀 Features
+
+Agentic ReAct pipeline (Observe → Reason → Act → Verify → Reply)
+
+Local LLM inference (LLaMA/Mistral/Vicuna via Ollama)
+
+Tool-Based Actions
+
+order_tool → fetch order status
+
+faq_tool → semantic FAQ retrieval
+
+refund_tool → process refunds securely
+
+Safety & Guardrails
+
+Refund confirmation
+
+₹10,000 refund limit
+
+DB verification before actions
+
+Auto human-escalation on low confidence
+
+FastAPI backend hosting the agent and endpoints
+
+ChromaDB for policy/FAQ embeddings & long-term memory
+
+SQLite for orders, customers, inventory, returns
+
+Slack/Web UI for live conversation demo
+
+🏗️ Tech Stack
+
+Backend: FastAPI (Python)
+
+Agent Framework: LangChain (ReAct agent + tools)
+
+Orchestration: Minimal LangGraph (optional)
+
+LLM: Local LLaMA/Mistral via Ollama
+
+Database: SQLite + SQLAlchemy
+
+Vector Store: ChromaDB
+
+Payments: Stripe API (Test Mode)
+
+UI: Slack Bot / Streamlit Chat UI
+
+📂 Project Structure
+/project-root
+│
+├── app/
+│   ├── main.py              # FastAPI server
+│   ├── agent.py             # LangChain ReAct agent
+│   ├── tools/
+│   │   ├── orders.py        # SQLite order lookup tool
+│   │   ├── refund.py        # Stripe refund tool
+│   │   └── faq.py           # Chroma retrieval tool
+│   ├── db/
+│   │   ├── models.py        # SQLAlchemy models
+│   │   └── seed.py          # Sample seed data
+│   └── memory/
+│       └── vectorstore.py   # Chroma embedding setup
+│
+├── ui/
+│   └── slack_bot.py         # Slack event handler
+│
+├── requirements.txt
+├── README.md
+└── .env.example
+
+⚙️ Setup Instructions
+1️⃣ Install Dependencies
+pip install -r requirements.txt
+
+2️⃣ Start Ollama (Local LLM)
+ollama pull llama3
+ollama serve
+
+3️⃣ Configure Environment
+
+Copy .env.example → .env and fill:
+
+STRIPE_API_KEY=sk_test_****
+LLM_MODEL=llama3
+
+4️⃣ Initialize SQLite & Chroma
+python app/db/seed.py
+
+5️⃣ Run FastAPI Server
+uvicorn app.main:app --reload
+
+6️⃣ (Optional) Run Slack Bot
+python ui/slack_bot.py
+
+🧪 Example Queries
+
+“Where is my order #8912?”
+
+“Process refund ₹7000 for order 1234.”
+
+“Show me your return policy.”
+
+“My product was damaged, what can I do?”
+
+🔐 Safety & Guardrails
+
+Refund limit: ₹10,000
+
+Mandatory user confirmation
+
+DB-verified order + payment mapping
+
+No hallucinated financial actions
+
+Escalates to human on uncertainty
+
+📈 Roadmap
+
+Multi-channel (WhatsApp API)
+
+Postgres migration for scale
+
+Production LLaMA 3 70B hosting
+
+Auto-email receipts
+
+Multi-turn memory optimization
