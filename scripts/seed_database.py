@@ -19,6 +19,11 @@ CUSTOMERS = [
     ("CUST003", "Bob Johnson", "bob.johnson@example.com", "+1-555-0103"),
     ("CUST004", "Alice Williams", "alice.w@example.com", "+1-555-0104"),
     ("CUST005", "Charlie Brown", "charlie.brown@example.com", "+1-555-0105"),
+    ("CUST006", "David Miller", "david.miller@example.com", "+1-555-0106"),
+    ("CUST007", "Emma Davis", "emma.davis@example.com", "+1-555-0107"),
+    ("CUST008", "Frank Wilson", "frank.wilson@example.com", "+1-555-0108"),
+    ("CUST009", "Grace Taylor", "grace.taylor@example.com", "+1-555-0109"),
+    ("CUST010", "Henry Anderson", "henry.anderson@example.com", "+1-555-0110"),
 ]
 
 PRODUCTS = [
@@ -30,9 +35,24 @@ PRODUCTS = [
     "API Credits - 10K",
     "API Credits - 100K",
     "Custom Integration",
+    "Basic Support Plan",
+    "Pro Support Plan",
+    "Developer Tools Bundle",
+    "Analytics Dashboard",
 ]
 
 ORDER_STATUSES = ["pending", "processing", "shipped", "delivered", "cancelled"]
+
+# Products with amounts under $120 for refund testing
+AFFORDABLE_PRODUCTS = [
+    ("Basic Support Plan", 29.99),
+    ("Premium Subscription - Monthly", 49.99),
+    ("Developer Tools Bundle", 79.99),
+    ("Analytics Dashboard", 89.99),
+    ("API Credits - 10K", 39.99),
+    ("Training Package", 99.99),
+    ("Pro Support Plan", 119.99),
+]
 
 
 def seed_customers():
@@ -63,15 +83,25 @@ def seed_orders():
     
     order_count = 0
     for i, (customer_id, name, _, _) in enumerate(CUSTOMERS, 1):
-        # Each customer has 2-4 orders
-        num_orders = random.randint(2, 4)
+        # Each customer has 3-5 orders
+        num_orders = random.randint(3, 5)
         
         for j in range(num_orders):
             order_count += 1
             order_id = f"ORD{order_count:04d}"
-            product = random.choice(PRODUCTS)
-            status = random.choice(ORDER_STATUSES)
-            amount = round(random.uniform(29.99, 999.99), 2)
+            
+            # 70% chance of affordable product (under $120), 30% chance of expensive
+            if random.random() < 0.7:
+                product, amount = random.choice(AFFORDABLE_PRODUCTS)
+            else:
+                product = random.choice(PRODUCTS)
+                amount = round(random.uniform(150.00, 999.99), 2)
+            
+            # Most orders should be "delivered" for refund testing
+            if random.random() < 0.7:
+                status = "delivered"
+            else:
+                status = random.choice(ORDER_STATUSES)
             
             # Orders from the past 90 days
             days_ago = random.randint(0, 90)
@@ -100,15 +130,18 @@ def seed_payments():
     cursor.execute("SELECT order_id, amount FROM orders")
     orders = cursor.fetchall()
     
-    payment_statuses = ["succeeded", "pending", "failed"]
-    
     for order in orders:
         order_id = order["order_id"]
         amount = order["amount"]
         
         # Generate a mock Stripe payment ID
         stripe_payment_id = f"pi_test_{order_id.lower()}"
-        status = random.choice(payment_statuses)
+        
+        # 90% of payments should be "succeeded" for refund testing
+        if random.random() < 0.9:
+            status = "succeeded"
+        else:
+            status = random.choice(["pending", "failed"])
         
         try:
             cursor.execute("""

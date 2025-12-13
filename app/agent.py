@@ -47,8 +47,15 @@ AGENT_SYSTEM_PROMPT = """You are a professional customer support agent working f
 
 **WHEN TO USE TOOLS (Silently - customer never sees this):**
 Reply with ONLY JSON when you need data:
+
+Examples:
 {{"action": "fetch_order", "action_input": "ORD0001"}}
-{{"action": "initiate_refund", "action_input": "pi_xxxxx"}}
+{{"action": "check_refund_eligibility", "action_input": "ORD0001"}}
+{{"action": "process_refund_for_order", "action_input": "ORD0001|user@example.com"}}
+{{"action": "create_support_ticket", "action_input": "Issue description|ORD0001|user@example.com"}}
+
+For tools needing multiple values, separate with | character.
+Extract order_id and email from conversation history!
 
 **RESPONSE EXAMPLES:**
 
@@ -69,13 +76,31 @@ For "Where is my order?":
 2. Call fetch_order silently
 3. Natural response: "I can see your order for [product] is currently [status]. It was placed on [date] and should arrive by [estimated date]."
 
-For "I want a refund":
-1. Empathize: "I understand, I'm happy to help with that"
-2. Ask for order ID: "Could you provide your order number?"
-3. Call process_refund_for_order silently
-4. Explain with care: "I've processed that refund for you. The [amount] will be returned to your original payment method within 5-7 business days..."
+For "I want a refund" - FOLLOW THIS EXACT FLOW (DON'T SKIP STEPS):
 
-NEVER ask for payment ID or bank details - system handles this!
+STEP 1: Get Order ID
+- If not provided: "Could you provide your order number?"
+- If provided: Continue to STEP 2
+
+STEP 2: Check Eligibility  
+- Call: check_refund_eligibility(order_id)
+- Inform: "Your refund amount is [X]. Our automated limit is $120."
+- Ask: "Would you like me to process this refund?"
+
+STEP 3A: If Customer Says YES
+- Ask ONCE: "I'll need your email to send confirmation."
+- WAIT for email response
+- ⚠️ CRITICAL: Once you have email, STOP TALKING and IMMEDIATELY execute:
+  {{"action": "process_refund_for_order", "action_input": "ORD0004|email@example.com"}}
+- DO NOT ask for confirmation again
+- DO NOT say "I'll initiate" - ACTUALLY DO IT
+- AFTER tool executes, confirm: "Perfect! Refund processed and confirmation sent to [email]"
+
+STEP 3B: If Customer Says NO or amount > $120
+- Call: create_support_ticket with order_id and email
+- Explain: "Support ticket created. Human will contact you within 4 hours."
+
+CRITICAL: Once you have BOTH order_id AND email, IMMEDIATELY execute process_refund_for_order. DO NOT loop back asking for information you already have!
 
 **AFTER TOOL RESULTS - Start with "FINAL ANSWER:"**
 Present information naturally in flowing conversation:
@@ -225,8 +250,38 @@ class CustomerSupportAgent:
             print(f"🔧 Executing tool: {tool_name} with input: {tool_input}")
             logger.info(f"Executing tool: {tool_name}", extra={"tool_name": tool_name, "session_id": self.session_id})
             
-            # Call the tool function directly
-            result = tool.func(tool_input)
+            # Handle different input formats
+            import json
+            
+            # Special handling for multi-parameter tools
+            if tool_name == "process_refund_for_order" and "|" in tool_input:
+                # Format: "order_id|customer_email" or "order_id|customer_email|reason"
+                parts = tool_input.split("|")
+                order_id = parts[0].strip()
+                customer_email = parts[1].strip() if len(parts) > 1 else ""
+                reason = parts[2].strip() if len(parts) > 2 else "requested_by_customer"
+                result = tool.func(order_id=order_id, customer_email=customer_email, reason=reason)
+            elif tool_name == "create_support_ticket" and "|" in tool_input:
+                # Format: "issue_description|order_id|customer_email|priority"
+                parts = tool_input.split("|")
+                issue_description = parts[0].strip()
+                order_id = parts[1].strip() if len(parts) > 1 else ""
+                customer_email = parts[2].strip() if len(parts) > 2 else ""
+                priority = parts[3].strip() if len(parts) > 3 else "medium"
+                result = tool.func(issue_description=issue_description, order_id=order_id, 
+                                 customer_email=customer_email, priority=priority)
+            else:
+                # Try JSON first
+                try:
+                    parsed_input = json.loads(tool_input)
+                    if isinstance(parsed_input, dict):
+                        result = tool.func(**parsed_input)
+                    else:
+                        result = tool.func(tool_input)
+                except (json.JSONDecodeError, TypeError):
+                    # Single string parameter
+                    result = tool.func(tool_input)
+            
             result_str = str(result)
             
             # Track tool results for escalation detection
@@ -317,13 +372,55 @@ Is there anything I can help you with in the meantime?
             
             conversation_history = []
             
-            # Detect query type and call appropriate tools immediately
+            # Detect query type
             query_lower = user_input.lower()
             
+            # ⚡ PROACTIVE REFUND DETECTION - Check this FIRST before any slow operations
+            import re
+            if any(kw in query_lower for kw in ["refund", "proceed", "process"]):
+                order_id_match = re.search(r'ord\d{4}', user_input, re.IGNORECASE)
+                email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', user_input)
+                
+                # Check conversation history for missing parameters
+                full_conversation = conversation_context + " " + user_input
+                if not order_id_match:
+                    order_id_match = re.search(r'ord\d{4}', full_conversation, re.IGNORECASE)
+                if not email_match:
+                    email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', full_conversation)
+                
+                # Also check recent memory
+                recent_messages = self.memory.get_history(limit=5)
+                for msg in recent_messages:
+                    content = msg.get('content', '')
+                    if not order_id_match:
+                        order_id_match = re.search(r'ord\d{4}', content, re.IGNORECASE)
+                    if not email_match:
+                        email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', content)
+                
+                print(f"🔍 Refund keywords detected in: {user_input}")
+                print(f"📋 Order ID found: {order_id_match.group().upper() if order_id_match else 'NO'}")
+                print(f"📧 Email found: {email_match.group() if email_match else 'NO'}")
+                
+                # If we have both order_id and email, execute refund immediately (skip all other processing)
+                if order_id_match and email_match:
+                    order_id = order_id_match.group().upper()
+                    email = email_match.group()
+                    print(f"✅ Both found! AUTO-EXECUTING REFUND: {order_id} | {email}")
+                    print(f"⚡ PROCESSING REFUND NOW (skipping FAQ/LLM)...")
+                    
+                    refund_result = self._execute_tool("process_refund_for_order", f"{order_id}|{email}")
+                    
+                    # Save to memory and return immediately
+                    self.memory.add_message("user", user_input)
+                    self.memory.add_message("assistant", refund_result)
+                    
+                    print(f"✅ REFUND COMPLETE! Returning result.")
+                    return refund_result
+            
+            # Only do slow FAQ searches if not a complete refund request
             # Check for order-related queries
             if any(keyword in query_lower for keyword in ["order", "ord", "where is my", "track"]):
                 # Extract order ID if present
-                import re
                 order_match = re.search(r'ord\d{4}', user_input, re.IGNORECASE)
                 if order_match:
                     order_id = order_match.group().upper()
@@ -331,7 +428,7 @@ Is there anything I can help you with in the meantime?
                     order_result = self._execute_tool("fetch_order", order_id)
                     conversation_history.append(f"Order Data:\n{order_result}\n")
             
-            # Check for refund queries
+            # Check for refund queries (only if we didn't already process complete refund above)
             if any(keyword in query_lower for keyword in ["refund", "return", "money back"]):
                 print(f"🔍 Detected refund query, searching FAQ")
                 faq_result = self._execute_tool("semantic_search_faq", "refund policy")

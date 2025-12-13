@@ -5,6 +5,7 @@ from typing import Optional, Dict, List
 from datetime import datetime
 
 from app.services.database import get_db_connection
+from app.services.email_service import email_service
 from langchain.tools import tool
 
 
@@ -149,7 +150,7 @@ class EscalationManager:
 
 
 @tool
-def create_support_ticket(issue_description: str, priority: str = "medium") -> str:
+def create_support_ticket(issue_description: str, order_id: str = "", customer_email: str = "", priority: str = "medium") -> str:
     """
     Create a support ticket for complex issues that need human attention.
     
@@ -157,9 +158,13 @@ def create_support_ticket(issue_description: str, priority: str = "medium") -> s
     - Customer explicitly asks for human agent
     - Issue is too complex to handle automatically
     - Legal or sensitive matters are involved
+    - Refund amount exceeds automated limit
+    - Customer declines to proceed with refund
     
     Args:
         issue_description: Detailed description of the issue
+        order_id: Related order ID (if applicable)
+        customer_email: Customer's email for ticket notification
         priority: Ticket priority (low, medium, high, urgent)
         
     Returns:
@@ -177,6 +182,18 @@ def create_support_ticket(issue_description: str, priority: str = "medium") -> s
             priority=priority
         )
         
+        # Send email notification if email provided
+        email_confirmation = ""
+        if customer_email:
+            email_sent = email_service.send_ticket_created_notification(
+                to_email=customer_email,
+                ticket_id=ticket_id,
+                order_id=order_id if order_id else "N/A",
+                customer_name="Customer"
+            )
+            if email_sent:
+                email_confirmation = f"\n\n📧 A confirmation email has been sent to {customer_email} with your ticket details."
+        
         return f"""
 ✅ **Support Ticket Created**
 
@@ -184,13 +201,13 @@ def create_support_ticket(issue_description: str, priority: str = "medium") -> s
 **Priority:** {priority}
 **Status:** Open
 
-A human support agent will review your case shortly. You can reference this ticket ID for follow-ups.
+A human support representative will review your case and contact you shortly. You can reference this ticket ID for any follow-ups.
 
 **Expected Response Time:**
 - Urgent: Within 1 hour
 - High: Within 4 hours
 - Medium: Within 24 hours
-- Low: Within 48 hours
+- Low: Within 48 hours{email_confirmation}
 
 Is there anything else I can help you with in the meantime?
 """

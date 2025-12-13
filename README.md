@@ -23,13 +23,21 @@ LLaMA/Mistral/Vicuna via Ollama
 ### Tool-Based Actions
 - `order_tool` → fetch order status
 - `faq_tool` → semantic FAQ retrieval
-- `refund_tool` → process refunds securely
+- `refund_tool` → process refunds securely with email notifications
+- `ticket_tool` → create support tickets with email confirmations
+
+### Email Notifications 📧
+- **Refund Processing**: Automatic confirmation emails with order details and timeline
+- **Support Tickets**: Ticket creation notifications with ID and expected response time
+- **Conversational Flow**: Agent asks for email before processing refunds
+- **Professional Templates**: HTML-formatted emails with company branding
 
 ### Safety & Guardrails
-- Refund confirmation
-- ₹10,000 refund limit
+- Refund confirmation workflow with customer approval
+- $120 automated refund limit (higher amounts escalate to humans)
 - DB verification before actions
 - Auto human-escalation on low confidence
+- Email confirmations for transparency
 
 ### Infrastructure
 - FastAPI backend hosting the agent and endpoints

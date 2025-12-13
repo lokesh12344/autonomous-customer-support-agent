@@ -120,7 +120,7 @@ if prompt := st.chat_input("Type your question here..."):
                         "message": prompt,
                         "session_id": st.session_state.session_id
                     },
-                    timeout=30
+                    timeout=120
                 )
                 
                 if response.status_code == 200:

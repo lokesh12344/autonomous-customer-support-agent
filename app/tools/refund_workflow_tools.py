@@ -5,6 +5,7 @@ from typing import Optional
 import stripe
 
 from app.services.database import get_db_connection
+from app.services.email_service import email_service
 from app.utils.config import settings
 
 # Initialize Stripe
@@ -13,19 +14,21 @@ if settings.stripe_api_key:
 
 
 @tool
-def process_refund_for_order(order_id: str, reason: str = "customer_request") -> str:
+def process_refund_for_order(order_id: str, customer_email: str, reason: str = "requested_by_customer") -> str:
     """
     Process a complete refund for an order. This tool handles the entire refund workflow:
     1. Looks up the order in database
     2. Finds associated payment
     3. Validates refund eligibility
     4. Processes refund through Stripe
+    5. Sends email notification to customer
     
-    Use this when customer requests a refund. Just need the order ID.
+    IMPORTANT: Use this ONLY after customer confirms they want to proceed with refund and provides email.
     
     Args:
         order_id: The order ID to refund
-        reason: Reason for refund (default: customer_request)
+        customer_email: Customer's email address for notification
+        reason: Reason for refund (default: requested_by_customer - must be one of: duplicate, fraudulent, or requested_by_customer)
         
     Returns:
         Formatted refund status with all details
@@ -69,30 +72,42 @@ def process_refund_for_order(order_id: str, reason: str = "customer_request") ->
         
         payment_id = payment['stripe_payment_id']
         payment_amount = payment['amount']
+        payment_status = payment['status']
         
-        # Step 3: Validate with Stripe
+        # Step 3: Check payment status in database first
+        if payment_status != "succeeded":
+            conn.close()
+            return f"❌ This payment cannot be refunded because its status is '{payment_status}'. Only successful payments can be refunded."
+        
+        # Step 4: Validate with Stripe API
         try:
             payment_intent = stripe.PaymentIntent.retrieve(payment_id)
-        except stripe.error.InvalidRequestError:
+            
+            # Check if payment is eligible for refund
+            if payment_intent.status != "succeeded":
+                conn.close()
+                return f"❌ This payment cannot be refunded because its status is '{payment_intent.status}'. Only successful payments can be refunded."
+            
+            # Get amount_refunded safely (might not exist in all payment intents)
+            amount_refunded = getattr(payment_intent, 'amount_refunded', 0) or 0
+            
+            # Check if already fully refunded
+            if amount_refunded >= payment_intent.amount:
+                conn.close()
+                return f"❌ This order has already been fully refunded."
+            
+            # Calculate refund amount (Stripe amounts are in cents)
+            refund_amount_dollars = (payment_intent.amount - amount_refunded) / 100
+            currency = payment_intent.currency.upper()
+            
+        except stripe.error.InvalidRequestError as e:
             conn.close()
-            return f"❌ The payment ID associated with this order is invalid. Please contact our support team."
+            return f"❌ Unable to validate payment with Stripe: {str(e)}. Please contact our support team."
         except Exception as e:
             conn.close()
             return f"❌ Error connecting to payment system: {str(e)}"
         
-        # Check if payment is eligible for refund
-        if payment_intent.status != "succeeded":
-            conn.close()
-            return f"❌ This payment cannot be refunded because its status is '{payment_intent.status}'. Only successful payments can be refunded."
-        
-        # Check if already fully refunded
-        if payment_intent.amount_received == 0 or payment_intent.amount_refunded >= payment_intent.amount:
-            conn.close()
-            return f"❌ This order has already been fully refunded."
-        
-        # Step 4: Apply safety guardrails
-        refund_amount_dollars = (payment_intent.amount - payment_intent.amount_refunded) / 100
-        currency = payment_intent.currency.upper()
+        # Step 5: Apply safety guardrails (automated refund limits)
         
         # Check refund limits
         REFUND_LIMIT_USD = 120
@@ -101,7 +116,7 @@ def process_refund_for_order(order_id: str, reason: str = "customer_request") ->
         if currency == "USD" and refund_amount_dollars > REFUND_LIMIT_USD:
             conn.close()
             return f"""
-I understand you'd like to process a refund for order {order_id}. However, the refund amount (${refund_amount_dollars:.2f}) exceeds our automated limit of ${REFUND_LIMIT_USD}.
+I understand you'd like to process a refund for order {order_id}. However, the refund amount of ${refund_amount_dollars:.2f} exceeds our automated limit of ${REFUND_LIMIT_USD}.
 
 I've created a support ticket for this high-value refund, and our finance team will review it within 4 hours. You'll receive an email confirmation once the refund is approved and processed.
 
@@ -110,20 +125,24 @@ Is there anything else I can help you with?
         elif currency == "INR" and refund_amount_dollars > REFUND_LIMIT_INR:
             conn.close()
             return f"""
-I understand you'd like to process a refund for order {order_id}. However, the refund amount (₹{refund_amount_dollars:.2f}) exceeds our automated limit of ₹{REFUND_LIMIT_INR}.
+I understand you'd like to process a refund for order {order_id}. However, the refund amount of ₹{refund_amount_dollars:.2f} exceeds our automated limit of ₹{REFUND_LIMIT_INR}.
 
 I've created a support ticket for this high-value refund, and our finance team will review it within 4 hours. You'll receive an email confirmation once the refund is approved and processed.
 
 Is there anything else I can help you with?
 """
         
-        # Step 5: Process the refund
-        refund = stripe.Refund.create(
-            payment_intent=payment_id,
-            reason=reason
-        )
+        # Step 6: Process the refund through Stripe
+        try:
+            refund = stripe.Refund.create(
+                payment_intent=payment_id,
+                reason=reason
+            )
+        except stripe.error.StripeError as e:
+            conn.close()
+            return f"❌ Stripe refund failed: {str(e)}. Please contact our support team."
         
-        # Step 6: Update order status in database
+        # Step 7: Update order status in database
         cursor.execute("""
             UPDATE orders
             SET status = 'refunded'
@@ -131,11 +150,36 @@ Is there anything else I can help you with?
         """, (order_id,))
         
         conn.commit()
-        conn.close()
         
-        # Step 7: Return success message
+        # Step 8: Get customer name and send email notification
         symbol = "₹" if currency == "INR" else "$"
         
+        # Get customer name from database
+        cursor.execute("""
+            SELECT c.name
+            FROM customers c
+            JOIN orders o ON c.customer_id = o.customer_id
+            WHERE o.order_id = ?
+        """, (order_id,))
+        customer_result = cursor.fetchone()
+        customer_name = customer_result['name'] if customer_result else "Customer"
+        
+        conn.close()
+        
+        # Send email notification
+        email_sent = email_service.send_refund_notification(
+            to_email=customer_email,
+            order_id=order_id,
+            refund_amount=refund_amount_dollars,
+            currency=currency,
+            customer_name=customer_name
+        )
+        
+        email_confirmation = ""
+        if email_sent:
+            email_confirmation = f"\n\n📧 A confirmation email has been sent to {customer_email} with all the refund details."
+        
+        # Step 9: Return success message
         return f"""
 ✅ **Refund Processed Successfully!**
 
@@ -152,7 +196,9 @@ I've processed your refund for order {order_id}. Here are the details:
 - Payment Method: The refund will be credited to your original payment method
 
 **Timeline:**
-The refund will appear in your account within **5-7 business days**, depending on your bank or card issuer.
+The refund will appear in your account within **5-7 business days**, depending on your bank or card issuer.{email_confirmation}
+
+*, depending on your bank or card issuer.
 
 You'll receive a confirmation email shortly with all the details. Is there anything else I can help you with?
 """
