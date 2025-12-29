@@ -6,11 +6,13 @@ import time
 from typing import List, Any, Optional, Dict
 
 from app.services.llm_engine import get_llm
+from app.services.database import get_db_connection
 from app.tools.db_tools import db_tools
 from app.tools.rag_tools import rag_tools
 from app.tools.stripe_tools import stripe_tools
 from app.tools.order_management_tools import order_management_tools
 from app.tools.refund_workflow_tools import refund_workflow_tools
+from app.tools.replacement_tools import request_product_replacement
 from app.services.escalation import escalation_tools, EscalationManager
 from app.services.memory import ConversationMemory
 from app.utils.logging_config import logger, log_tool_execution, log_agent_request, log_escalation
@@ -71,10 +73,12 @@ Is there anything else I can help you with today?"
 
 **RESPONSE STRATEGY:**
 
-For "Where is my order?":
-1. Acknowledge: "Let me check on that for you"
-2. Call fetch_order silently
-3. Natural response: "I can see your order for [product] is currently [status]. It was placed on [date] and should arrive by [estimated date]."
+For "Where is my order?" - CHECK FOR ORDER ID FIRST:
+- If NO order ID provided: "I'd be happy to check on your order! Could you please provide your order number? It should be in the format ORDXXXXX."
+- If order id provided:
+  1. Call fetch_order silently
+  2. Natural response: "I can see your order for [product] is currently [status]. It was placed on [date] and should arrive by [estimated date]."
+- NEVER use placeholders like [status] or [estimated date] - ALWAYS use actual data from fetch_order tool result
 
 For "I want a refund" - FOLLOW THIS EXACT FLOW (DON'T SKIP STEPS):
 
@@ -101,6 +105,27 @@ STEP 3B: If Customer Says NO or amount > $120
 - Explain: "Support ticket created. Human will contact you within 4 hours."
 
 CRITICAL: Once you have BOTH order_id AND email, IMMEDIATELY execute process_refund_for_order. DO NOT loop back asking for information you already have!
+
+For "I want a replacement" / "Product is defective" - FOLLOW THIS FLOW:
+
+STEP 1: Get Order ID
+- If not provided: "I'm sorry to hear about the issue. Could you provide your order number?"
+- If provided: Continue to STEP 2
+
+STEP 2: Get Reason
+- Ask: "Could you tell me what's wrong with the product?" (defective, wrong item, damaged, quality issue)
+- Get customer email if not already known
+
+STEP 3: Process Replacement
+- Call: request_product_replacement(order_id, email, reason)
+- Explain: "I've created a high-priority ticket for your replacement. Support will contact you within 4 hours."
+- The tool automatically sends Slack notification to support team
+
+Valid replacement reasons:
+- defective_product: Product not working properly
+- wrong_item: Customer received wrong product
+- damaged_delivery: Product damaged during shipping
+- quality_issue: Product quality below standard
 
 **AFTER TOOL RESULTS - Start with "FINAL ANSWER:"**
 Present information naturally in flowing conversation:
@@ -176,6 +201,9 @@ class CustomerSupportAgent:
         
         # Add refund workflow tools (complete refund handling)
         all_tools.extend(refund_workflow_tools)
+        
+        # Add replacement tools
+        all_tools.append(request_product_replacement)
         
         # Add escalation tools
         all_tools.extend(escalation_tools)
@@ -378,13 +406,13 @@ Is there anything I can help you with in the meantime?
             # ⚡ PROACTIVE REFUND DETECTION - Check this FIRST before any slow operations
             import re
             if any(kw in query_lower for kw in ["refund", "proceed", "process"]):
-                order_id_match = re.search(r'ord\d{4}', user_input, re.IGNORECASE)
+                order_id_match = re.search(r'ord\d+', user_input, re.IGNORECASE)
                 email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', user_input)
                 
                 # Check conversation history for missing parameters
                 full_conversation = conversation_context + " " + user_input
                 if not order_id_match:
-                    order_id_match = re.search(r'ord\d{4}', full_conversation, re.IGNORECASE)
+                    order_id_match = re.search(r'ord\d+', full_conversation, re.IGNORECASE)
                 if not email_match:
                     email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', full_conversation)
                 
@@ -393,7 +421,7 @@ Is there anything I can help you with in the meantime?
                 for msg in recent_messages:
                     content = msg.get('content', '')
                     if not order_id_match:
-                        order_id_match = re.search(r'ord\d{4}', content, re.IGNORECASE)
+                        order_id_match = re.search(r'ord\d+', content, re.IGNORECASE)
                     if not email_match:
                         email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', content)
                 
@@ -421,12 +449,85 @@ Is there anything I can help you with in the meantime?
             # Check for order-related queries
             if any(keyword in query_lower for keyword in ["order", "ord", "where is my", "track"]):
                 # Extract order ID if present
-                order_match = re.search(r'ord\d{4}', user_input, re.IGNORECASE)
+                order_match = re.search(r'ord\d+', user_input, re.IGNORECASE)
                 if order_match:
                     order_id = order_match.group().upper()
                     print(f"🔍 Detected order query, fetching order {order_id}")
                     order_result = self._execute_tool("fetch_order", order_id)
                     conversation_history.append(f"Order Data:\n{order_result}\n")
+                else:
+                    # Order query detected but no order ID provided
+                    print(f"🔍 Order query detected but no order ID provided")
+                    conversation_history.append("INSTRUCTION: Customer is asking about their order but hasn't provided an order ID. You MUST ask them for their order number (format: ORDXXXXX) before you can help them track it.\n")
+            
+            # ⚡ PROACTIVE REPLACEMENT DETECTION - Similar to refund detection
+            if any(keyword in query_lower for keyword in ["replacement", "replace", "defective", "wrong item", "damaged", "quality issue"]):
+                order_id_match = re.search(r'ord\d+', user_input, re.IGNORECASE)
+                
+                # Check conversation history for missing order ID
+                full_conversation = conversation_context + " " + user_input
+                if not order_id_match:
+                    order_id_match = re.search(r'ord\d+', full_conversation, re.IGNORECASE)
+                
+                # Also check recent memory for order ID
+                recent_messages = self.memory.get_history(limit=5)
+                for msg in recent_messages:
+                    content = msg.get('content', '')
+                    if not order_id_match:
+                        order_id_match = re.search(r'ord\d+', content, re.IGNORECASE)
+                
+                # Detect reason from keywords
+                reason = "defective_product"  # default
+                if "wrong item" in query_lower or "wrong product" in query_lower:
+                    reason = "wrong_item"
+                elif "damaged" in query_lower or "broken" in query_lower:
+                    reason = "damaged_delivery"
+                elif "quality" in query_lower or "defective" in query_lower:
+                    reason = "defective_product"
+                
+                # Try to get email
+                email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', full_conversation)
+                if not email_match:
+                    for msg in recent_messages:
+                        content = msg.get('content', '')
+                        if not email_match:
+                            email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', content)
+                
+                print(f"🔍 Replacement keywords detected in: {user_input}")
+                print(f"📋 Order ID found: {order_id_match.group().upper() if order_id_match else 'NO'}")
+                print(f"📧 Email found: {email_match.group() if email_match else 'NO'}")
+                print(f"🔧 Reason detected: {reason}")
+                
+                # If we have order_id, process replacement (email not strictly required for DB lookup)
+                if order_id_match:
+                    order_id = order_id_match.group().upper()
+                    
+                    # Get email - either from conversation or fetch from order
+                    if email_match:
+                        email = email_match.group()
+                    else:
+                        # Fetch email from order record
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT c.email FROM orders o LEFT JOIN customers c ON o.customer_id = c.id WHERE o.order_id = ?", (order_id,))
+                        result = cursor.fetchone()
+                        conn.close()
+                        email = result[0] if result and result[0] else "customer@example.com"
+                    
+                    print(f"✅ Processing replacement: {order_id} | {email} | {reason}")
+                    print(f"⚡ EXECUTING REPLACEMENT NOW (skipping FAQ/LLM)...")
+                    
+                    replacement_result = self._execute_tool("request_product_replacement", f"{order_id}|{email}|{reason}")
+                    
+                    # Save to memory and return immediately
+                    self.memory.add_message("user", user_input)
+                    self.memory.add_message("assistant", replacement_result)
+                    
+                    print(f"✅ REPLACEMENT REQUEST COMPLETE! Returning result.")
+                    return replacement_result
+                else:
+                    # No order ID found, ask for it
+                    conversation_history.append("INSTRUCTION: Customer is requesting a product replacement. You MUST ask them for their order number (format: ORDXXXXX) before you can help them.\n")
             
             # Check for refund queries (only if we didn't already process complete refund above)
             if any(keyword in query_lower for keyword in ["refund", "return", "money back"]):

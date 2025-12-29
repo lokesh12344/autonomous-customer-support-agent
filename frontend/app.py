@@ -69,9 +69,7 @@ with st.sidebar:
     ]
     
     for query in sample_queries:
-        if st.button(query, key=query):
-            st.session_state.messages.append({"role": "user", "content": query})
-            st.rerun()
+        st.markdown(f"• {query}")
     
     st.markdown("---")
     

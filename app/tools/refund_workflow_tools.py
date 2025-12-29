@@ -3,9 +3,11 @@
 from langchain.tools import tool
 from typing import Optional
 import stripe
+import time
 
 from app.services.database import get_db_connection
 from app.services.email_service import email_service
+from app.services.slack_service import slack_service
 from app.utils.config import settings
 
 # Initialize Stripe
@@ -114,20 +116,44 @@ def process_refund_for_order(order_id: str, customer_email: str, reason: str = "
         REFUND_LIMIT_INR = 10000
         
         if currency == "USD" and refund_amount_dollars > REFUND_LIMIT_USD:
+            # Create support ticket for manual review
+            ticket_id = f"TKT-{order_id}-{int(time.time())}"
+            
+            # Send Slack alert for high-value refund
+            slack_service.send_high_value_refund_alert(
+                order_id=order_id,
+                customer_email=customer_email,
+                refund_amount=refund_amount_dollars,
+                currency=currency,
+                ticket_id=ticket_id
+            )
+            
             conn.close()
             return f"""
 I understand you'd like to process a refund for order {order_id}. However, the refund amount of ${refund_amount_dollars:.2f} exceeds our automated limit of ${REFUND_LIMIT_USD}.
 
-I've created a support ticket for this high-value refund, and our finance team will review it within 4 hours. You'll receive an email confirmation once the refund is approved and processed.
+I've created a support ticket ({ticket_id}) for this high-value refund, and our finance team will review it within 4 hours. You'll receive an email confirmation once the refund is approved and processed.
 
 Is there anything else I can help you with?
 """
         elif currency == "INR" and refund_amount_dollars > REFUND_LIMIT_INR:
+            # Create support ticket for manual review
+            ticket_id = f"TKT-{order_id}-{int(time.time())}"
+            
+            # Send Slack alert for high-value refund
+            slack_service.send_high_value_refund_alert(
+                order_id=order_id,
+                customer_email=customer_email,
+                refund_amount=refund_amount_dollars,
+                currency=currency,
+                ticket_id=ticket_id
+            )
+            
             conn.close()
             return f"""
 I understand you'd like to process a refund for order {order_id}. However, the refund amount of ₹{refund_amount_dollars:.2f} exceeds our automated limit of ₹{REFUND_LIMIT_INR}.
 
-I've created a support ticket for this high-value refund, and our finance team will review it within 4 hours. You'll receive an email confirmation once the refund is approved and processed.
+I've created a support ticket ({ticket_id}) for this high-value refund, and our finance team will review it within 4 hours. You'll receive an email confirmation once the refund is approved and processed.
 
 Is there anything else I can help you with?
 """
@@ -173,6 +199,15 @@ Is there anything else I can help you with?
             refund_amount=refund_amount_dollars,
             currency=currency,
             customer_name=customer_name
+        )
+        
+        # Send Slack notification
+        slack_service.send_refund_notification(
+            order_id=order_id,
+            customer_email=customer_email,
+            refund_amount=refund_amount_dollars,
+            currency=currency,
+            refund_id=refund.id
         )
         
         email_confirmation = ""

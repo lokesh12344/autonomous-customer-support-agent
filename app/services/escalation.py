@@ -6,6 +6,7 @@ from datetime import datetime
 
 from app.services.database import get_db_connection
 from app.services.email_service import email_service
+from app.services.slack_service import slack_service
 from langchain.tools import tool
 
 
@@ -193,6 +194,15 @@ def create_support_ticket(issue_description: str, order_id: str = "", customer_e
             )
             if email_sent:
                 email_confirmation = f"\n\n📧 A confirmation email has been sent to {customer_email} with your ticket details."
+        
+        # Send Slack notification for new ticket
+        slack_service.send_support_ticket_notification(
+            ticket_id=ticket_id,
+            issue=issue_description,
+            customer_email=customer_email if customer_email else "Not provided",
+            order_id=order_id if order_id else None,
+            priority=priority
+        )
         
         return f"""
 ✅ **Support Ticket Created**

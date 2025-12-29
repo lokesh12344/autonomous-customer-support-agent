@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     # Slack
     slack_token: str = Field(default="", alias="SLACK_TOKEN")
     slack_signing_secret: str = Field(default="", alias="SLACK_SIGNING_SECRET")
+    slack_channel: str = Field(default="general", alias="SLACK_CHANNEL")
     
     # Email
     smtp_server: str = Field(default="smtp.gmail.com", alias="SMTP_SERVER")
